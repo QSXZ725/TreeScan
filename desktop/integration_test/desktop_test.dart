@@ -13,6 +13,25 @@ import 'package:treescan_desktop/treemap.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('administrator scanning exposes only the scan workspace', (
+    tester,
+  ) async {
+    final fixture = testFolder();
+    Directory('${fixture.path}/read-only-fixture').createSync();
+    await tester.pumpWidget(
+      TreeScanApp(initialDirectory: fixture.path, readOnlyScan: true),
+    );
+    await untilVisible(tester, find.text('read-only-fixture'));
+
+    expect(find.byIcon(Icons.lock_outline), findsOneWidget);
+    expect(find.byKey(const ValueKey('choose-folder')), findsOneWidget);
+    expect(find.byKey(const ValueKey('open-settings')), findsNothing);
+    expect(find.byKey(const ValueKey('open-about')), findsNothing);
+    expect(find.byKey(const ValueKey('open-smart')), findsNothing);
+    expect(find.text('导出快照'), findsNothing);
+    expect(find.text('Export snapshot'), findsNothing);
+  });
+
   testWidgets('scans, displays both metrics, and refreshes one directory', (
     tester,
   ) async {

@@ -10,6 +10,7 @@ TreeScan 是本地磁盘空间分析工具。选择磁盘或目录后，可以�
 - 支持停止扫描、重扫指定目录和导出 JSON 快照。
 - 在应用内选择目录，按名称筛选已加载的条目。设置中可调整语言、主题、容量单位和扫描线程数。
 - Windows 支持文件右键操作、SMART 磁盘健康、WSL 2 文件系统扫描和后台完成通知。
+- Windows 的管理员重扫使用只读扫描窗口。文件操作和导出在普通窗口中可用。
 
 ## 使用
 
@@ -31,6 +32,8 @@ cargo run --locked --release -- . --export TreeScan-snapshot.json
 ## 从源码构建
 
 扫描核心使用 Rust，桌面界面使用 Flutter。Windows 桌面构建需要 Visual Studio 的 C++ 桌面开发工作负载，Linux 需要 GTK 3 构建依赖，macOS 图形版需要 Xcode。 [构建脚本](scripts)
+
+Android 正式版使用固定签名密钥。GitHub Actions 从仓库 Secrets 读取 `TREESCAN_ANDROID_KEYSTORE_BASE64` 和 `TREESCAN_ANDROID_STORE_PASSWORD`，签名别名为 `treescan`。在本机可设置密码环境变量并使用 `scripts/Build-Android.ps1 -Official -ReleaseKeystore <路径>`。普通构建使用预览签名。
 
 ## 开源协议
 

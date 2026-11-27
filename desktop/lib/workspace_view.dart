@@ -32,13 +32,14 @@ extension _WorkspaceView on _WorkspaceState {
             _shortcutExpand(true),
         const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
             _shortcutExpand(false),
-        SingleActivator(
-          LogicalKeyboardKey.keyC,
-          control: !isMac,
-          meta: isMac,
-          shift: true,
-        ): _shortcutCopyPath,
-        if (Platform.isWindows) ...{
+        if (!_readOnlyScan)
+          SingleActivator(
+            LogicalKeyboardKey.keyC,
+            control: !isMac,
+            meta: isMac,
+            shift: true,
+          ): _shortcutCopyPath,
+        if (Platform.isWindows && !_readOnlyScan) ...{
           const SingleActivator(LogicalKeyboardKey.delete): () =>
               _shortcutFileCommand(_FileCommand.delete),
           const SingleActivator(LogicalKeyboardKey.keyC, control: true): () =>
@@ -131,8 +132,12 @@ extension _WorkspaceView on _WorkspaceState {
                   children: [
                     _sideButton(
                       compact,
-                      _t('扫描', 'Scan'),
-                      Icons.space_dashboard_outlined,
+                      _readOnlyScan
+                          ? _t('管理员只读', 'Admin read-only')
+                          : _t('扫描', 'Scan'),
+                      _readOnlyScan
+                          ? Icons.lock_outline
+                          : Icons.space_dashboard_outlined,
                       () => _showPage(_WorkspacePage.scan),
                       selected: _workspacePage == _WorkspacePage.scan,
                     ),
@@ -178,7 +183,7 @@ extension _WorkspaceView on _WorkspaceState {
                                   : () => _start(path, wslRoot: _wslRoot)),
                         key: const ValueKey('restart-or-stop'),
                       ),
-                      if (Platform.isWindows)
+                      if (Platform.isWindows && !_readOnlyScan)
                         _sideButton(
                           compact,
                           _isWslPath(path)
@@ -193,14 +198,15 @@ extension _WorkspaceView on _WorkspaceState {
                               ? () => _start(path, wslRoot: !_wslRoot)
                               : () => _action('elevate', path),
                         ),
-                      _sideButton(
-                        compact,
-                        _t('导出快照', 'Export snapshot'),
-                        Icons.download_outlined,
-                        _progress == null || _busy || _editingFiles
-                            ? null
-                            : _exportSnapshot,
-                      ),
+                      if (!_readOnlyScan)
+                        _sideButton(
+                          compact,
+                          _t('导出快照', 'Export snapshot'),
+                          Icons.download_outlined,
+                          _progress == null || _busy || _editingFiles
+                              ? null
+                              : _exportSnapshot,
+                        ),
                       if (_wslRoot && !compact)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
@@ -214,33 +220,35 @@ extension _WorkspaceView on _WorkspaceState {
                 ),
               ),
             ),
-            if (_settings.showMascot) _mascot(compact, short),
-            const Divider(indent: 12, endIndent: 12),
-            if (Platform.isWindows)
+            if (!_readOnlyScan) ...[
+              if (_settings.showMascot) _mascot(compact, short),
+              const Divider(indent: 12, endIndent: 12),
+              if (Platform.isWindows)
+                _sideButton(
+                  compact,
+                  _t('磁盘健康', 'Drive health'),
+                  Icons.monitor_heart_outlined,
+                  () => _showPage(_WorkspacePage.smart),
+                  selected: _workspacePage == _WorkspacePage.smart,
+                  key: const ValueKey('open-smart'),
+                ),
               _sideButton(
                 compact,
-                _t('磁盘健康', 'Drive health'),
-                Icons.monitor_heart_outlined,
-                () => _showPage(_WorkspacePage.smart),
-                selected: _workspacePage == _WorkspacePage.smart,
-                key: const ValueKey('open-smart'),
+                _t('设置', 'Settings'),
+                Icons.settings_outlined,
+                () => _showPage(_WorkspacePage.settings),
+                selected: _workspacePage == _WorkspacePage.settings,
+                key: const ValueKey('open-settings'),
               ),
-            _sideButton(
-              compact,
-              _t('设置', 'Settings'),
-              Icons.settings_outlined,
-              () => _showPage(_WorkspacePage.settings),
-              selected: _workspacePage == _WorkspacePage.settings,
-              key: const ValueKey('open-settings'),
-            ),
-            _sideButton(
-              compact,
-              _t('关于', 'About'),
-              Icons.info_outline,
-              () => _showPage(_WorkspacePage.about),
-              selected: _workspacePage == _WorkspacePage.about,
-              key: const ValueKey('open-about'),
-            ),
+              _sideButton(
+                compact,
+                _t('关于', 'About'),
+                Icons.info_outline,
+                () => _showPage(_WorkspacePage.about),
+                selected: _workspacePage == _WorkspacePage.about,
+                key: const ValueKey('open-about'),
+              ),
+            ],
             const SizedBox(height: 12),
           ],
         ),
@@ -1140,7 +1148,7 @@ extension _WorkspaceView on _WorkspaceState {
                 ],
               ),
             ),
-            if (item.path case final path?) ...[
+            if (item.path case final path? when !_readOnlyScan) ...[
               IconButton(
                 tooltip: _t('复制路径', 'Copy path'),
                 icon: const Icon(Icons.copy_rounded, size: 18),

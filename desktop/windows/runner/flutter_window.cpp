@@ -8,10 +8,12 @@
 
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "scan_notifications.h"
@@ -39,10 +41,47 @@ struct UiClosureImpl final : UiClosure {
   Fn fn_;
 };
 
-template <typename Fn>
-UiClosure* MakeUiClosure(Fn&& fn) {
-  return new UiClosureImpl<std::decay_t<Fn>>(std::forward<Fn>(fn));
-}
+}  // namespace
+
+class UiTaskQueue {
+ public:
+  void Post(HWND window, std::unique_ptr<UiClosure> task) {
+    const std::lock_guard lock(mutex_);
+    if (closed_) return;
+    pending_.push_back(std::move(task));
+    // The message only wakes the UI thread. Its parameters are untrusted.
+    if (!PostMessageW(window, kRunOnUiThread, 0, 0)) pending_.pop_back();
+  }
+
+  void Dispatch() {
+    std::vector<std::unique_ptr<UiClosure>> tasks;
+    {
+      const std::lock_guard lock(mutex_);
+      tasks.swap(pending_);
+    }
+    for (auto& task : tasks) {
+      {
+        const std::lock_guard lock(mutex_);
+        if (closed_) return;
+      }
+      task->Run();
+    }
+  }
+
+  void Close() {
+    std::vector<std::unique_ptr<UiClosure>> dropped;
+    const std::lock_guard lock(mutex_);
+    closed_ = true;
+    dropped.swap(pending_);
+  }
+
+ private:
+  std::mutex mutex_;
+  bool closed_ = false;
+  std::vector<std::unique_ptr<UiClosure>> pending_;
+};
+
+namespace {
 
 struct PoolTask {
   virtual ~PoolTask() = default;
@@ -67,25 +106,18 @@ VOID CALLBACK RunPoolTask(PTP_CALLBACK_INSTANCE, PVOID context) {
 }
 
 template <typename Work, typename Reply>
-void RunAsync(HWND hwnd, std::shared_ptr<std::atomic<bool>> alive,
+void RunAsync(HWND hwnd, std::shared_ptr<UiTaskQueue> ui_tasks,
               std::unique_ptr<MethodResult<EncodableValue>> result,
               Work&& work, Reply&& reply) {
   auto* pool_task = MakePoolTask(
-      [hwnd, flag = std::move(alive), out = std::move(result),
+      [hwnd, queue = std::move(ui_tasks), out = std::move(result),
        fn_work = std::move(work), fn_reply = std::move(reply)]() mutable {
-        auto value = fn_work();
-        if (!flag || !flag->load()) return;
-        UiClosure* ui_task = MakeUiClosure(
-            [flag, out_ptr = std::move(out), reply_fn = std::move(fn_reply),
-             val = std::move(value)]() mutable {
-              if (flag->load()) {
-                reply_fn(*out_ptr, std::move(val));
-              }
-            });
-        if (!PostMessageW(hwnd, kRunOnUiThread, 0,
-                          reinterpret_cast<LPARAM>(ui_task))) {
-          delete ui_task;
-        }
+        auto complete = [out_ptr = std::move(out), reply_fn = std::move(fn_reply),
+                         value = fn_work()]() mutable {
+          reply_fn(*out_ptr, std::move(value));
+        };
+        queue->Post(hwnd, std::make_unique<UiClosureImpl<decltype(complete)>>(
+                              std::move(complete)));
       });
   if (!TrySubmitThreadpoolCallback(RunPoolTask, pool_task, nullptr)) {
     std::unique_ptr<PoolTask> fallback(pool_task);
@@ -225,12 +257,13 @@ HRESULT Elevate(HWND window, const std::wstring& path) {
   return ShellExecuteExW(&launch) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
 }
 
-void HandleShell(HWND window, std::shared_ptr<std::atomic<bool>> alive,
+void HandleShell(HWND window, std::shared_ptr<UiTaskQueue> ui_tasks,
+                 bool read_only_scan,
                  const MethodCall<EncodableValue>& call,
                  std::unique_ptr<MethodResult<EncodableValue>> result) {
   if (call.method_name() == "volumes") {
     RunAsync(
-        window, std::move(alive), std::move(result),
+        window, std::move(ui_tasks), std::move(result),
         []() { return LocalVolumes(); },
         [](MethodResult<EncodableValue>& res, EncodableList volumes) {
           res.Success(EncodableValue(std::move(volumes)));
@@ -239,7 +272,7 @@ void HandleShell(HWND window, std::shared_ptr<std::atomic<bool>> alive,
   }
   if (call.method_name() == "volumeInfo") {
     RunAsync(
-        window, std::move(alive), std::move(result),
+        window, std::move(ui_tasks), std::move(result),
         []() { return LocalVolumeDetails(); },
         [](MethodResult<EncodableValue>& res, EncodableList volumes) {
           res.Success(EncodableValue(std::move(volumes)));
@@ -248,7 +281,7 @@ void HandleShell(HWND window, std::shared_ptr<std::atomic<bool>> alive,
   }
   if (call.method_name() == "wslDisks") {
     RunAsync(
-        window, std::move(alive), std::move(result),
+        window, std::move(ui_tasks), std::move(result),
         []() {
           EncodableList disks;
           for (const auto& disk : RegisteredWslDisks()) {
@@ -277,7 +310,7 @@ void HandleShell(HWND window, std::shared_ptr<std::atomic<bool>> alive,
       return;
     }
     RunAsync(
-        window, std::move(alive), std::move(result),
+        window, std::move(ui_tasks), std::move(result),
         [target = std::move(distro)]() -> std::optional<int64_t> {
           for (const auto& disk : RegisteredWslDisks()) {
             if (!disk.image.empty() &&
@@ -316,6 +349,10 @@ void HandleShell(HWND window, std::shared_ptr<std::atomic<bool>> alive,
     result->NotImplemented();
     return;
   }
+  if (read_only_scan) {
+    result->Error("read-only-scan", "File and shell actions require the standard window");
+    return;
+  }
   const auto* argument = call.arguments() ?
       std::get_if<std::string>(call.arguments()) : nullptr;
   const std::wstring path = argument ? WideFromUtf8(*argument) : L"";
@@ -347,8 +384,9 @@ void HandleShell(HWND window, std::shared_ptr<std::atomic<bool>> alive,
 
 }  // namespace
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project,
+                             bool read_only_scan)
+    : project_(project), read_only_scan_(read_only_scan) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -369,8 +407,10 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
-  alive_ = std::make_shared<std::atomic<bool>>(true);
-  notification_activator_ = RegisterScanNotificationActivator(GetHandle());
+  ui_tasks_ = std::make_shared<UiTaskQueue>();
+  if (!read_only_scan_) {
+    notification_activator_ = RegisterScanNotificationActivator(GetHandle());
+  }
   shell_ = std::make_unique<flutter::MethodChannel<EncodableValue>>(
       flutter_controller_->engine()->messenger(), "org.treescan/windows",
       &flutter::StandardMethodCodec::GetInstance());
@@ -378,12 +418,16 @@ bool FlutterWindow::OnCreate() {
       [this](const auto& call, auto result) {
         const bool test = call.method_name() == "testScanNotification";
         if (test || call.method_name() == "scanCompleteNotification") {
+          if (read_only_scan_) {
+            result->Error("read-only-scan", "Notifications require the standard window");
+            return;
+          }
           const auto* message = call.arguments() ?
               std::get_if<std::string>(call.arguments()) : nullptr;
           std::wstring wide_message = message ? WideFromUtf8(*message) : L"";
           HWND hwnd = GetHandle();
           RunAsync(
-              hwnd, alive_, std::move(result),
+              hwnd, ui_tasks_, std::move(result),
               [hwnd, text = std::move(wide_message), test]() {
                 return ShowScanNotification(hwnd, text, test);
               },
@@ -422,7 +466,8 @@ bool FlutterWindow::OnCreate() {
           }
           return;
         }
-        HandleShell(GetHandle(), alive_, call, std::move(result));
+        HandleShell(GetHandle(), ui_tasks_, read_only_scan_, call,
+                    std::move(result));
       });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -438,9 +483,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
-  if (alive_) {
-    alive_->store(false);
-  }
+  if (ui_tasks_) ui_tasks_->Close();
   if (notification_activator_) {
     CoRevokeClassObject(notification_activator_);
     notification_activator_ = 0;
@@ -458,10 +501,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
   if (message == kRunOnUiThread) {
-    std::unique_ptr<UiClosure> task(reinterpret_cast<UiClosure*>(lparam));
-    if (alive_ && alive_->load()) {
-      task->Run();
-    }
+    if (ui_tasks_) ui_tasks_->Dispatch();
     return 0;
   }
   if (message == kActivateScanNotification) {

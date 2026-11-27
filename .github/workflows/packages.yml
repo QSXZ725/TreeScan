@@ -29,7 +29,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
@@ -62,7 +62,7 @@ jobs:
           $official = $env:GITHUB_REF_TYPE -eq 'tag'
           ./scripts/Build-Installer.ps1 -Architecture ${{ matrix.architecture }} -Official:$official
           ./scripts/Build-Installer.ps1 -Architecture ${{ matrix.architecture }} -Official:$official -Portable
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: TreeScan-windows-${{ matrix.architecture }}
           path: dist/TreeScan-*-windows-${{ matrix.architecture }}*
@@ -82,7 +82,7 @@ jobs:
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
@@ -118,12 +118,12 @@ jobs:
           xvfb-run -a --server-args='-screen 0 1440x900x24'
           flutter test --no-pub -d linux integration_test/desktop_test.dart
           --plain-name 'scans, displays both metrics, and refreshes one directory'
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/TreeScan-*-linux-${{ matrix.architecture }}.tar.gz
           if-no-files-found: error
           archive: false
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/TreeScan-*-linux-${{ matrix.architecture }}-desktop.tar.gz
           if-no-files-found: error
@@ -132,7 +132,7 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
@@ -163,12 +163,12 @@ jobs:
         run: >
           flutter test --no-pub -d macos integration_test/desktop_test.dart
           --plain-name 'scans, displays both metrics, and refreshes one directory'
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/TreeScan-*-macos-universal.tar.gz
           if-no-files-found: error
           archive: false
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/TreeScan-*-macos-universal-desktop.zip
           if-no-files-found: error
@@ -177,19 +177,19 @@ jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v4
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
         with:
           packages: ''
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0' 'ndk;27.0.12077973'
       - run: rustup toolchain install stable --profile minimal --target aarch64-linux-android --target armv7-linux-androideabi --target x86_64-linux-android
-      - name: Build and verify the preview APK
+      - name: Build the Android APK
         shell: pwsh
         run: |
           $version = [regex]::Match((Get-Content desktop/pubspec.yaml -Raw), '(?m)^version:\s*(\d+\.\d+\.\d+)').Groups[1].Value
@@ -197,8 +197,22 @@ jobs:
           if ($official -and $env:GITHUB_REF_NAME -ne "v$version") {
             throw "Expected tag v$version."
           }
-          ./scripts/Build-Android.ps1 -Official:$official -JavaHome $env:JAVA_HOME
-      - uses: actions/upload-artifact@v7
+          if ($official) {
+            ./scripts/Build-Android.ps1 -Official -JavaHome $env:JAVA_HOME -UnsignedApk (Join-Path $env:RUNNER_TEMP 'TreeScan-unsigned.apk')
+          } else {
+            ./scripts/Build-Android.ps1 -JavaHome $env:JAVA_HOME
+          }
+      - name: Sign and verify the release APK
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          TREESCAN_ANDROID_KEYSTORE_BASE64: ${{ secrets.TREESCAN_ANDROID_KEYSTORE_BASE64 }}
+          TREESCAN_ANDROID_STORE_PASSWORD: ${{ secrets.TREESCAN_ANDROID_STORE_PASSWORD }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          ./scripts/Sign-Android.ps1 -Apk (Join-Path $env:RUNNER_TEMP 'TreeScan-unsigned.apk') -OutputFile "dist/TreeScan-$version-android.apk" `
+            -JavaHome $env:JAVA_HOME -BuildTools (Join-Path $env:ANDROID_SDK_ROOT 'build-tools/36.1.0')
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/TreeScan-*-android.apk
           if-no-files-found: error

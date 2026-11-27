@@ -26,8 +26,21 @@ enum _FileCommand { open, copy, cut, paste, delete, copyPath, reveal }
 
 enum _WorkspacePage { scan, smart, settings, about }
 
-void main(List<String> args) {
+void main(List<String> arguments) {
   WidgetsFlutterBinding.ensureInitialized();
+  final readOnlyScan = arguments.firstOrNull == '--read-only-scan';
+  final args = readOnlyScan ? arguments.skip(1).toList() : arguments;
+  if (!readOnlyScan) _installCrashReporting();
+  String? initial;
+  if (args.length == 2 && args.first == '--scan') {
+    initial = args[1];
+  } else if (args.length == 1 && !args.first.startsWith('-')) {
+    initial = args.first;
+  }
+  runApp(TreeScanApp(initialDirectory: initial, readOnlyScan: readOnlyScan));
+}
+
+void _installCrashReporting() {
   final frameworkHandler = FlutterError.onError;
   FlutterError.onError = (details) {
     crashLog.record(
@@ -44,13 +57,6 @@ void main(List<String> args) {
     return previousHandler?.call(error, stack) ?? false;
   };
   unawaited(_loadCrashVersion());
-  String? initial;
-  if (args.length == 2 && args.first == '--scan') {
-    initial = args[1];
-  } else if (args.length == 1 && !args.first.startsWith('-')) {
-    initial = args.first;
-  }
-  runApp(TreeScanApp(initialDirectory: initial));
 }
 
 Future<void> _loadCrashVersion() async {
@@ -66,10 +72,16 @@ Future<void> _loadCrashVersion() async {
 }
 
 class TreeScanApp extends StatefulWidget {
-  const TreeScanApp({super.key, this.initialDirectory, this.settingsFile});
+  const TreeScanApp({
+    super.key,
+    this.initialDirectory,
+    this.settingsFile,
+    this.readOnlyScan = false,
+  });
 
   final String? initialDirectory;
   final File? settingsFile;
+  final bool readOnlyScan;
 
   @override
   State<TreeScanApp> createState() => _TreeScanAppState();
@@ -86,7 +98,8 @@ class _TreeScanAppState extends State<TreeScanApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(_loadSettings());
+    _ready = widget.readOnlyScan;
+    if (!_ready) unawaited(_loadSettings());
   }
 
   @override
@@ -115,6 +128,7 @@ class _TreeScanAppState extends State<TreeScanApp> with WidgetsBindingObserver {
   }
 
   void _changeSettings(SettingsChange change) {
+    if (widget.readOnlyScan) return;
     final settings = change(_settings);
     final themeChanged = settings.theme != _settings.theme;
     setState(() => _settings = settings);
@@ -157,6 +171,7 @@ class _TreeScanAppState extends State<TreeScanApp> with WidgetsBindingObserver {
             settings: _settings,
             onSettingsChanged: _changeSettings,
             settingsError: _settingsError,
+            readOnlyScan: widget.readOnlyScan,
           )
         : const SizedBox.shrink(),
   );
@@ -193,12 +208,14 @@ class _Workspace extends StatefulWidget {
     required this.settings,
     required this.onSettingsChanged,
     this.settingsError,
+    required this.readOnlyScan,
   });
 
   final String? initialDirectory;
   final AppSettings settings;
   final ValueChanged<SettingsChange> onSettingsChanged;
   final String? settingsError;
+  final bool readOnlyScan;
 
   @override
   State<_Workspace> createState() => _WorkspaceState();
@@ -206,7 +223,7 @@ class _Workspace extends StatefulWidget {
 
 class _WorkspaceState extends State<_Workspace>
     with SingleTickerProviderStateMixin {
-  final _scanner = Scanner();
+  late final Scanner _scanner;
   final _expanded = <int>{0};
   final _pageLimits = <int, int>{};
   final _clock = Stopwatch();
@@ -261,6 +278,7 @@ class _WorkspaceState extends State<_Workspace>
   int? _stopFrameMs;
 
   bool get _busy => _starting || (_progress?.busy ?? false);
+  bool get _readOnlyScan => widget.readOnlyScan;
   AppSettings get _settings => widget.settings;
   String Function(String, String) get _t => _settings.text;
 
@@ -300,7 +318,9 @@ class _WorkspaceState extends State<_Workspace>
   }
 
   Future<void> _notifyScanComplete(int files, {required bool rescanned}) async {
-    if (!Platform.isWindows || !_settings.scanNotifications) return;
+    if (_readOnlyScan || !Platform.isWindows || !_settings.scanNotifications) {
+      return;
+    }
     final message = rescanned
         ? _t('重扫完成，已扫描 $files 个文件。', 'Rescan complete. Scanned $files files.')
         : _t('扫描完成，已扫描 $files 个文件。', 'Scan complete. Scanned $files files.');
@@ -326,6 +346,7 @@ class _WorkspaceState extends State<_Workspace>
   @override
   void initState() {
     super.initState();
+    _scanner = Scanner(readOnly: _readOnlyScan);
     if (widget.initialDirectory case final path?) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_start(path));
@@ -712,6 +733,7 @@ class _WorkspaceState extends State<_Workspace>
   }
 
   Future<void> _action(String action, String path) async {
+    if (_readOnlyScan) return;
     try {
       if (action == 'copyPath') {
         await Clipboard.setData(ClipboardData(text: path));
@@ -735,7 +757,7 @@ class _WorkspaceState extends State<_Workspace>
 
   Future<void> _contextMenu(ScanItem row, Offset position) async {
     final generation = _progress?.generation;
-    if (generation == null || _editingFiles) return;
+    if (_readOnlyScan || generation == null || _editingFiles) return;
     try {
       final item = row.path == null
           ? await _scanner.node(row.id, generation)
@@ -845,7 +867,9 @@ class _WorkspaceState extends State<_Workspace>
     ScanItem? pasteTarget,
     bool? clipboardReady,
   }) async {
-    if (_editingFiles || generation != _progress?.generation) return;
+    if (_readOnlyScan || _editingFiles || generation != _progress?.generation) {
+      return;
+    }
     final path = item.path;
     if (path == null) return;
     final managed =
@@ -1108,7 +1132,7 @@ class _WorkspaceState extends State<_Workspace>
 
   Future<void> _exportSnapshot() async {
     final generation = _progress?.generation;
-    if (generation == null || _busy || _editingFiles) return;
+    if (_readOnlyScan || generation == null || _busy || _editingFiles) return;
     final directory = await pickScanDirectory(
       context,
       _shell,

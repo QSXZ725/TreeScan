@@ -228,11 +228,12 @@ class ScanProgress {
 }
 
 class Scanner {
-  Scanner() {
+  Scanner({this.readOnly = false}) {
     _replies.listen(_receive);
     unawaited(_spawn());
   }
 
+  final bool readOnly;
   final _replies = ReceivePort();
   final _ready = Completer<SendPort>();
   final _pending = <int, Completer<Object?>>{};
@@ -249,7 +250,9 @@ class Scanner {
         debugName: 'TreeScan native queries',
       );
     } catch (error, stack) {
-      crashLog.record('scanner-isolate', error.runtimeType.toString(), stack);
+      if (!readOnly) {
+        crashLog.record('scanner-isolate', error.runtimeType.toString(), stack);
+      }
       _fail(error.toString());
     }
   }
@@ -269,7 +272,10 @@ class Scanner {
         reply?.completeError(ScanFailure(message[2] as String));
       }
     } else if (message is List) {
-      if (!_closed && message.length == 2 && message[1] is String) {
+      if (!readOnly &&
+          !_closed &&
+          message.length == 2 &&
+          message[1] is String) {
         crashLog.record(
           'scanner-isolate',
           'UnhandledWorkerError',
@@ -292,13 +298,16 @@ class Scanner {
     String operation, [
     Json parameters = const {},
   ]) async {
+    if (readOnly && operation == 'export') {
+      throw const ScanFailure('管理员扫描为只读模式');
+    }
     final port = await _ready.future;
     if (_closed) throw const ScanFailure('扫描服务已关闭');
     final id = _nextId++;
     final reply = _pending[id] = Completer<Object?>();
     port.send([
       id,
-      {'op': operation, ...parameters},
+      {...parameters, 'op': operation},
     ]);
     return reply.future;
   }

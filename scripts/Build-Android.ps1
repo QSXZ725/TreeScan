@@ -6,6 +6,8 @@ param(
     [string]$JavaHome,
     [string]$Ndk,
     [string]$RustSysroots,
+    [string]$UnsignedApk,
+    [string]$ReleaseKeystore,
     [switch]$Official
 )
 
@@ -14,6 +16,13 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $Workspace).Path
 $windows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $suffix = if ($windows) { '.exe' } else { '' }
+if (($UnsignedApk -or $ReleaseKeystore) -and !$Official) {
+    throw 'Use -Official when preparing or signing a release APK.'
+}
+if ($Official -and !$UnsignedApk -and
+    (!$env:TREESCAN_ANDROID_STORE_PASSWORD -or (!$ReleaseKeystore -and !$env:TREESCAN_ANDROID_KEYSTORE_BASE64))) {
+    throw 'Configure the Android release keystore and TREESCAN_ANDROID_STORE_PASSWORD.'
+}
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $root 'dist' }
 if (!$Sdk) {
     $candidates = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME)
@@ -129,6 +138,19 @@ $align = Join-Path $tools.FullName "zipalign$suffix"
 & $align -P 16 -f 4 $unsigned $aligned
 if ($LASTEXITCODE -ne 0) { throw "APK alignment failed ($LASTEXITCODE)." }
 
+if ($UnsignedApk) {
+    Copy-Item -LiteralPath $aligned -Destination $UnsignedApk
+    Get-Item -LiteralPath $UnsignedApk
+    return
+}
+
+$out = [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory)).FullName
+if ($Official) {
+    & "$PSScriptRoot/Sign-Android.ps1" -Apk $aligned -OutputFile (Join-Path $out "TreeScan-$version-android.apk") `
+        -JavaHome $JavaHome -BuildTools $tools.FullName -Keystore $ReleaseKeystore
+    return
+}
+
 $key = Join-Path $root 'target/android-preview.keystore'
 if (!(Test-Path -LiteralPath $key)) {
     $pending = Join-Path $stage 'preview.keystore'
@@ -146,8 +168,6 @@ if ($LASTEXITCODE -ne 0) { throw "APK verification failed ($LASTEXITCODE)." }
 & $align -P 16 -c 4 $signed
 if ($LASTEXITCODE -ne 0) { throw "APK alignment verification failed ($LASTEXITCODE)." }
 
-$out = [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory)).FullName
-$packageVersion = if ($Official) { $version } else { "$version-build.$build" }
-$archive = Join-Path $out "TreeScan-$packageVersion-android.apk"
+$archive = Join-Path $out "TreeScan-$version-build.$build-android.apk"
 Copy-Item -LiteralPath $signed -Destination $archive -Force
 Get-Item -LiteralPath $archive
