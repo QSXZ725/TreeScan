@@ -1,7 +1,7 @@
 name: treescan_desktop
 description: "TreeScan desktop disk space analyzer."
 publish_to: 'none'
-version: 0.1.0+8
+version: 0.1.1+9
 
 environment:
   sdk: ^3.12.2
