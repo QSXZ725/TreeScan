@@ -1,0 +1,205 @@
+name: Release packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            architecture: x64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            architecture: arm64
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - name: Set up Flutter
+        run: |
+          $sdk = Join-Path $env:RUNNER_TEMP 'flutter'
+          git clone --depth 1 --branch 3.44.4 https://github.com/flutter/flutter.git $sdk
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          (Join-Path $sdk 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Check and build the desktop app
+        working-directory: desktop
+        run: |
+          $version = [regex]::Match((Get-Content pubspec.yaml -Raw), '(?m)^version:\s*(\d+\.\d+\.\d+)').Groups[1].Value
+          $official = $env:GITHUB_REF_TYPE -eq 'tag'
+          if ($official -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Expected tag v$version."
+          }
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dart format --output=none --set-exit-if-changed lib test integration_test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter analyze --no-pub
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter test --no-pub test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter build windows --release --no-pub "--dart-define=TREESCAN_GITHUB_REPOSITORY=$env:GITHUB_REPOSITORY" "--dart-define=TREESCAN_OFFICIAL_RELEASE=$($official.ToString().ToLowerInvariant())"
+          exit $LASTEXITCODE
+      - name: Package MSI and portable ZIP
+        run: |
+          $official = $env:GITHUB_REF_TYPE -eq 'tag'
+          ./scripts/Build-Installer.ps1 -Architecture ${{ matrix.architecture }} -Official:$official
+          ./scripts/Build-Installer.ps1 -Architecture ${{ matrix.architecture }} -Official:$official -Portable
+      - uses: actions/upload-artifact@v7
+        with:
+          name: TreeScan-windows-${{ matrix.architecture }}
+          path: dist/TreeScan-*-windows-${{ matrix.architecture }}*
+          if-no-files-found: error
+          compression-level: 0
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            architecture: x64
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - name: Install Linux desktop build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev xvfb xauth libgl1-mesa-dri
+      - name: Set up Flutter
+        run: |
+          git clone --depth 1 --branch 3.44.4 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Build and run the Linux package
+        shell: pwsh
+        run: |
+          $version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version = "(\d+\.\d+\.\d+)"').Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Expected tag v$version."
+          }
+          ./scripts/Build-Linux.ps1 -Architecture ${{ matrix.architecture }}
+          $name = "TreeScan-$version-linux-${{ matrix.architecture }}"
+          tar -xzf "dist/$name.tar.gz" -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $app = Join-Path $env:RUNNER_TEMP "$name/treescan"
+          if ((& $app --version) -ne "TreeScan $version") { throw 'Wrong CLI version.' }
+          & $app ./src
+          exit $LASTEXITCODE
+      - name: Package the Linux desktop app
+        shell: pwsh
+        run: ./scripts/Build-Desktop.ps1 -Official:($env:GITHUB_REF_TYPE -eq 'tag')
+      - name: Scan a fixture in the native Linux window
+        working-directory: desktop
+        run: >
+          xvfb-run -a --server-args='-screen 0 1440x900x24'
+          flutter test --no-pub -d linux integration_test/desktop_test.dart
+          --plain-name 'scans, displays both metrics, and refreshes one directory'
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/TreeScan-*-linux-${{ matrix.architecture }}.tar.gz
+          if-no-files-found: error
+          archive: false
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/TreeScan-*-linux-${{ matrix.architecture }}-desktop.tar.gz
+          if-no-files-found: error
+          archive: false
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Set up Flutter
+        run: |
+          git clone --depth 1 --branch 3.44.4 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Build and run the universal macOS package
+        shell: pwsh
+        run: |
+          $version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version = "(\d+\.\d+\.\d+)"').Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Expected tag v$version."
+          }
+          ./scripts/Build-MacOS.ps1
+          $name = "TreeScan-$version-macos-universal"
+          tar -xzf "dist/$name.tar.gz" -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $app = Join-Path $env:RUNNER_TEMP "$name/treescan"
+          if ((& $app --version) -ne "TreeScan $version") { throw 'Wrong CLI version.' }
+          & $app ./src
+          exit $LASTEXITCODE
+      - name: Package the universal macOS desktop app
+        shell: pwsh
+        run: ./scripts/Build-Desktop.ps1 -Official:($env:GITHUB_REF_TYPE -eq 'tag')
+      - name: Scan a fixture in the native macOS window
+        working-directory: desktop
+        run: >
+          flutter test --no-pub -d macos integration_test/desktop_test.dart
+          --plain-name 'scans, displays both metrics, and refreshes one directory'
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/TreeScan-*-macos-universal.tar.gz
+          if-no-files-found: error
+          archive: false
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/TreeScan-*-macos-universal-desktop.zip
+          if-no-files-found: error
+          archive: false
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0' 'ndk;27.0.12077973'
+      - run: rustup toolchain install stable --profile minimal --target aarch64-linux-android --target armv7-linux-androideabi --target x86_64-linux-android
+      - name: Build and verify the preview APK
+        shell: pwsh
+        run: |
+          $version = [regex]::Match((Get-Content desktop/pubspec.yaml -Raw), '(?m)^version:\s*(\d+\.\d+\.\d+)').Groups[1].Value
+          $official = $env:GITHUB_REF_TYPE -eq 'tag'
+          if ($official -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Expected tag v$version."
+          }
+          ./scripts/Build-Android.ps1 -Official:$official -JavaHome $env:JAVA_HOME
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/TreeScan-*-android.apk
+          if-no-files-found: error
+          archive: false

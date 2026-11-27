@@ -1,0 +1,31 @@
+name: treescan_desktop
+description: "TreeScan desktop disk space analyzer."
+publish_to: 'none'
+version: 0.1.0+8
+
+environment:
+  sdk: ^3.12.2
+  flutter: '>=3.44.4'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  ffi: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/treescan-logo.png
+    - assets/gpt-dragon-idle.webp
+    - assets/gpt-dragon-searching.webp
+    - assets/gemini-idle.webp
+    - assets/gemini-searching.webp

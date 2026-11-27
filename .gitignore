@@ -1,0 +1,39 @@
+# Build and local verification
+/target/
+/dist/
+/doc/验证记录.md
+/doc/版本与发布.md
+
+# Local tools and workspace metadata
+/.venv/
+/.idea/
+/.vs/
+/.git-codex-backup/
+/.agents/
+/.codex/
+/.aws/
+__pycache__/
+
+# Application state and exports
+/TreeScan.portable
+/settings.json
+crash-reports/
+TreeScan-snapshot*.json
+TreeScan-crash-report*.json
+*.log
+
+# Credentials and signing keys
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+*.keystore
+*.jks
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
